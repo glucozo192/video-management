@@ -10,4 +10,5 @@ import (
 type IVideoUsecase interface {
 	GetVideoById(ctx context.Context, id uint) (*ent.Videos, error)
 	SearchVideo(ctx context.Context, query models.SearchVideoRequest, key string) (*models.VideosListResponse, error)
+	InvalidateCache(ctx context.Context, key string)
 }

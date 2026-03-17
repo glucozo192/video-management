@@ -5,7 +5,7 @@ import (
 
 	"github.com/glu/video-real-time-ranking/core/pkg/logger"
 	"github.com/glu/video-real-time-ranking/core/pkg/utils"
-	"github.com/glu/video-real-time-ranking/reader_service/config"
+	"github.com/glu/video-real-time-ranking/writer_service/config"
 	"github.com/glu/video-real-time-ranking/writer_service/internal/domain/models"
 	"github.com/glu/video-real-time-ranking/writer_service/internal/domain/repositories"
 

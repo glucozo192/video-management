@@ -39,7 +39,11 @@ func (s *server) connectKafkaBrokers(ctx context.Context) error {
 }
 
 func (s *server) getConsumerGroupTopics() []string {
-	return []string{}
+	return []string{
+		s.cfg.KafkaTopics.VideoCreated.TopicName,
+		s.cfg.KafkaTopics.VideoUpdated.TopicName,
+		s.cfg.KafkaTopics.VideoDeleted.TopicName,
+	}
 }
 
 func (s *server) runHealthCheck(ctx context.Context) {

@@ -9,24 +9,29 @@ import (
 
 	upload_services "github.com/glu/video-real-time-ranking/writer_service/internal/services/upload"
 
+	kafkaClient "github.com/glu/video-real-time-ranking/core/pkg/kafka"
 	"github.com/glu/video-real-time-ranking/core/pkg/grpc_client"
 	"github.com/glu/video-real-time-ranking/core/pkg/interceptors"
 	"github.com/glu/video-real-time-ranking/core/pkg/logger"
+	"github.com/glu/video-real-time-ranking/core/pkg/mongodb"
 	"github.com/glu/video-real-time-ranking/core/pkg/mysql"
 	"github.com/glu/video-real-time-ranking/core/pkg/tracing"
 	readerService "github.com/glu/video-real-time-ranking/core/proto/services/reader/proto_buf"
 	"github.com/glu/video-real-time-ranking/ent"
 	"github.com/glu/video-real-time-ranking/writer_service/config"
 	v1 "github.com/glu/video-real-time-ranking/writer_service/internal/delivery/http/v1"
+	kafkaConsumer "github.com/glu/video-real-time-ranking/writer_service/internal/delivery/kafka"
 	"github.com/glu/video-real-time-ranking/writer_service/internal/domain/services"
 	"github.com/glu/video-real-time-ranking/writer_service/internal/domain/usecase"
 	metrics "github.com/glu/video-real-time-ranking/writer_service/internal/metrics"
 	"github.com/glu/video-real-time-ranking/writer_service/internal/middlewares"
+	activity_history_repo "github.com/glu/video-real-time-ranking/writer_service/internal/repositories/activity_history"
 	comment_repo "github.com/glu/video-real-time-ranking/writer_service/internal/repositories/comment"
 	object_repo "github.com/glu/video-real-time-ranking/writer_service/internal/repositories/object"
 	reaction_repo "github.com/glu/video-real-time-ranking/writer_service/internal/repositories/reaction"
 	video_repo "github.com/glu/video-real-time-ranking/writer_service/internal/repositories/video"
 	viewer_repo "github.com/glu/video-real-time-ranking/writer_service/internal/repositories/viewer"
+	activity_history_usecase "github.com/glu/video-real-time-ranking/writer_service/internal/usecase/activity_history"
 	comment_usecase "github.com/glu/video-real-time-ranking/writer_service/internal/usecase/comment"
 	object_usecase "github.com/glu/video-real-time-ranking/writer_service/internal/usecase/object"
 	reaction_usecase "github.com/glu/video-real-time-ranking/writer_service/internal/usecase/reaction"
@@ -39,23 +44,26 @@ import (
 	"github.com/pkg/errors"
 	"github.com/segmentio/kafka-go"
 	"github.com/valyala/fasthttp"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type server struct {
-	log             logger.Logger
-	cfg             *config.Config
-	v               *validator.Validate
-	kafkaConn       *kafka.Conn
-	videoUsecase    usecase.IVideoUsecase
-	viewerUsecase   usecase.IViewerUsecase
-	objectUsecase   usecase.IObjectUsecase
-	reactionUsecase usecase.IReactionUsecase
-	commentUsecase  usecase.ICommentUsecase
-	uploadServices  services.IUploadServices
-	im              interceptors.InterceptorManager
-	mw              middlewares.MiddlewareManager
-	entClient       *ent.Client
-	metrics         *metrics.WriterServiceMetrics
+	log                    logger.Logger
+	cfg                    *config.Config
+	v                      *validator.Validate
+	kafkaConn              *kafka.Conn
+	videoUsecase           usecase.IVideoUsecase
+	viewerUsecase          usecase.IViewerUsecase
+	objectUsecase          usecase.IObjectUsecase
+	reactionUsecase        usecase.IReactionUsecase
+	commentUsecase         usecase.ICommentUsecase
+	activityHistoryUsecase usecase.IActivityHistoryUsecase
+	uploadServices         services.IUploadServices
+	im                     interceptors.InterceptorManager
+	mw                     middlewares.MiddlewareManager
+	entClient              *ent.Client
+	mongoClient            *mongo.Client
+	metrics                *metrics.WriterServiceMetrics
 }
 
 func NewServer(log logger.Logger, cfg *config.Config) *server {
@@ -104,14 +112,21 @@ func (s *server) initializeDatabaseConnections() error {
 	s.entClient = entConn
 	s.log.Infof("MySQL connected: %v", entConn)
 
+	mongoDBConn, err := mongodb.NewMongoDBConn(context.Background(), s.cfg.Mongo)
+	if err != nil {
+		s.log.WarnMsg("mongodb.NewMongoDBConn", err)
+		// Non-fatal: activity history simply won't log if Mongo is unavailable
+	} else {
+		s.mongoClient = mongoDBConn
+		s.log.Infof("MongoDB connected")
+	}
+
 	return nil
 }
 
 func (s *server) initializeKafka(ctx context.Context) error {
-	//kafkaProducer := kafkaClient.NewProducer(s.log, s.cfg.Kafka.Brokers)
-	//defer kafkaProducer.Close()
-
-	//messageProcessor := kafkaConsumer.NewMessageProcessor(s.log, s.cfg, s.v, s.videoUsecase, s.metrics)
+	kafkaProducer := kafkaClient.NewProducer(s.log, s.cfg.Kafka.Brokers)
+	defer kafkaProducer.Close()
 
 	videoRepo := video_repo.NewVideoRepository(s.log, s.cfg, s.entClient)
 	reactionRepo := reaction_repo.NewReactionRepository(s.log, s.cfg, s.entClient)
@@ -127,22 +142,32 @@ func (s *server) initializeKafka(ctx context.Context) error {
 
 	s.uploadServices = upload_services.NewUploadService(s.log, s.cfg)
 
-	s.videoUsecase = video_usecase.NewVideoUsecase(s.log, s.cfg, videoRepo, commentRepo, viewerRepo, reactionRepo, objectRepo, rsClient, s.uploadServices, nil)
+	// Activity history - wire if MongoDB is available
+	if s.mongoClient != nil {
+		activityHistoryRepo := activity_history_repo.NewMongoRepository(s.log, s.cfg, s.mongoClient)
+		s.activityHistoryUsecase = activity_history_usecase.NewActivityHistoryUsecase(s.log, activityHistoryRepo)
+	}
+
+	s.videoUsecase = video_usecase.NewVideoUsecase(s.log, s.cfg, videoRepo, commentRepo, viewerRepo, reactionRepo, objectRepo, rsClient, s.uploadServices, kafkaProducer)
 	s.commentUsecase = comment_usecase.NewCommentUsecase(s.log, s.cfg, commentRepo, nil)
 	s.viewerUsecase = viewer_usecase.NewViewerUsecase(s.log, s.cfg, viewerRepo, nil)
 	s.reactionUsecase = reaction_usecase.NewReactionUsecase(s.log, s.cfg, reactionRepo, nil)
 	s.objectUsecase = object_usecase.NewObjectUsecase(s.log, s.cfg, objectRepo, nil)
 
-	//s.log.Info("Starting Writer Kafka consumers")
-	//cg := kafkaClient.NewConsumerGroup(s.cfg.Kafka.Brokers, s.cfg.Kafka.GroupID, s.log)
-	//go cg.ConsumeTopic(ctx, s.getConsumerGroupTopics(), kafkaConsumer.PoolSize, messageProcessor.ProcessMessages)
-	//
-	//if err := s.connectKafkaBrokers(ctx); err != nil {
-	//	return errors.Wrap(err, "s.connectKafkaBrokers")
-	//}
+	messageProcessor := kafkaConsumer.NewMessageProcessor(s.log, s.cfg, s.v, s.videoUsecase, s.metrics)
+
+	s.log.Info("Starting Writer Kafka consumers")
+	cg := kafkaClient.NewConsumerGroup(s.cfg.Kafka.Brokers, s.cfg.Kafka.GroupID, s.log)
+	go cg.ConsumeTopic(ctx, s.getConsumerGroupTopics(), kafkaConsumer.PoolSize, messageProcessor.ProcessMessages)
+
+	if err := s.connectKafkaBrokers(ctx); err != nil {
+		return errors.Wrap(err, "s.connectKafkaBrokers")
+	}
+	defer s.kafkaConn.Close()
 
 	return nil
 }
+
 
 func (s *server) startHTTPServer() error {
 	routerInit := fasthttprouter.New()

@@ -8,6 +8,7 @@ import (
 	"github.com/glu/video-real-time-ranking/core/pkg/constants"
 	kafkaClient "github.com/glu/video-real-time-ranking/core/pkg/kafka"
 	"github.com/glu/video-real-time-ranking/core/pkg/logger"
+	"github.com/glu/video-real-time-ranking/core/pkg/mongodb"
 	"github.com/glu/video-real-time-ranking/core/pkg/probes"
 	"github.com/glu/video-real-time-ranking/core/pkg/tracing"
 	"github.com/glu/video-real-time-ranking/core/pkg/utils"
@@ -30,6 +31,7 @@ type Config struct {
 	Http             Http                `mapstructure:"http"`
 	Postgresql       *utils.Config       `mapstructure:"postgres"`
 	Kafka            *kafkaClient.Config `mapstructure:"kafka"`
+	Mongo            *mongodb.Config     `mapstructure:"mongo"`
 	MongoCollections MongoCollections    `mapstructure:"mongoCollections"`
 	ServiceSettings  ServiceSettings     `mapstructure:"serviceSettings"`
 	Probes           probes.Config       `mapstructure:"probes"`

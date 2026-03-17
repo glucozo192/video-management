@@ -51,18 +51,36 @@ func (v *videoUsecase) GetVideoById(ctx context.Context, id uint) (*ent.Videos, 
 	return videoResp, nil
 }
 
-func (v *videoUsecase) SearchVideo(ctx context.Context, query models2.SearchVideoRequest, key string) (*models2.VideosListResponse, error) {
-	//if videoCacheResp, err := v.redisRepo.GetVideosByKey(ctx, key); err == nil && videoCacheResp.Videos != nil {
-	//	return &videoCacheResp, nil
-	//}
+// InvalidateCache removes a video from Redis cache by key so the next read fetches fresh data from DB.
+func (v *videoUsecase) InvalidateCache(ctx context.Context, key string) {
+	v.redisRepo.DelVideo(ctx, key)
+	v.log.Debugf("Cache invalidated for key: %s", key)
+}
 
+func (v *videoUsecase) SearchVideo(ctx context.Context, query models2.SearchVideoRequest, key string) (*models2.VideosListResponse, error) {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "videoUsecase.SearchVideo")
+	defer span.Finish()
+
+	// 1. Try Redis cache first (cache-aside pattern)
+	if key != "" {
+		if videoCacheResp, err := v.redisRepo.GetVideosByKey(ctx, key); err == nil && videoCacheResp.Videos != nil {
+			v.log.Debugf("SearchVideo cache HIT key: %s", key)
+			return &videoCacheResp, nil
+		}
+	}
+
+	// 2. Cache miss → query DB
 	videoResp, err := v.entRepo.SearchVideoByParams(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 
-	//if err = v.redisRepo.PutVideos(ctx, key, *videoResp); err != nil {
-	//	return nil, err
-	//}
+	// 3. Store in cache (non-blocking — cache failure must not block the response)
+	if key != "" {
+		if err = v.redisRepo.PutVideos(ctx, key, *videoResp); err != nil {
+			v.log.WarnMsg("redisRepo.PutVideos", err)
+		}
+	}
+
 	return videoResp, nil
 }

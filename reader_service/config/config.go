@@ -61,6 +61,9 @@ type MongoCollections struct {
 }
 
 type KafkaTopics struct {
+	VideoCreated kafkaClient.TopicConfig `mapstructure:"videoCreated"`
+	VideoUpdated kafkaClient.TopicConfig `mapstructure:"videoUpdated"`
+	VideoDeleted kafkaClient.TopicConfig `mapstructure:"videoDeleted"`
 }
 
 type ServiceSettings struct {

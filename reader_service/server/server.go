@@ -9,12 +9,14 @@ import (
 	"syscall"
 
 	"github.com/glu/video-real-time-ranking/core/pkg/interceptors"
+	kafkaClient "github.com/glu/video-real-time-ranking/core/pkg/kafka"
 	"github.com/glu/video-real-time-ranking/core/pkg/logger"
 	"github.com/glu/video-real-time-ranking/core/pkg/mysql"
 	redisClient "github.com/glu/video-real-time-ranking/core/pkg/redis"
 	"github.com/glu/video-real-time-ranking/ent"
 	"github.com/glu/video-real-time-ranking/reader_service/config"
 	v1 "github.com/glu/video-real-time-ranking/reader_service/internal/delivery/http/v1"
+	readerKafka "github.com/glu/video-real-time-ranking/reader_service/internal/delivery/kafka"
 	"github.com/glu/video-real-time-ranking/reader_service/internal/domain/usecase"
 	"github.com/glu/video-real-time-ranking/reader_service/internal/metrics"
 	comment_repo "github.com/glu/video-real-time-ranking/reader_service/internal/repositories/comment"
@@ -70,9 +72,18 @@ func (s *server) Run() error {
 		return err
 	}
 
-	//defer s.redisClient.Close()
-	//defer s.kafkaConn.Close()
-	//defer s.mongoClient.Disconnect(ctx)
+	// Graceful resource cleanup on shutdown
+	defer func() {
+		if s.redisClient != nil {
+			s.redisClient.Close()
+		}
+		if s.kafkaConn != nil {
+			s.kafkaConn.Close()
+		}
+		if s.mongoClient != nil {
+			s.mongoClient.Disconnect(context.Background())
+		}
+	}()
 
 	// Start the HTTP server in a goroutine
 	go func() {
@@ -90,8 +101,6 @@ func (s *server) Run() error {
 
 	// Wait for context to be done
 	<-ctx.Done()
-
-	// Optionally, you can gracefully shut down your servers here if needed.
 
 	return nil
 }
@@ -168,16 +177,14 @@ func (s *server) initializeServices(ctx context.Context) error {
 	s.viewerUsecase = viewer_usecase.NewViewerUsecase(s.log, s.cfg, redisViewerRepo, viewerRepo)
 
 	// Initialize Kafka consumer
-	//readerMessageProcessor := readerKafka.NewReaderMessageProcessor(s.log, s.cfg, s.v, s.videoUsecase, s.metrics)
-	//s.log.Info("Starting Reader Kafka consumers")
-	//cg := kafkaClient.NewConsumerGroup(s.cfg.Kafka.Brokers, s.cfg.Kafka.GroupID, s.log)
-	//go cg.ConsumeTopic(ctx, s.getConsumerGroupTopics(), readerKafka.PoolSize, readerMessageProcessor.ProcessMessages)
-	//
-	//// Connect to Kafka brokers
-	//if err := s.connectKafkaBrokers(ctx); err != nil {
-	//	return errors.Wrap(err, "s.connectKafkaBrokers")
-	//}
-	//defer s.kafkaConn.Close()
+	readerMessageProcessor := readerKafka.NewReaderMessageProcessor(s.log, s.cfg, s.v, s.videoUsecase, s.metrics)
+	s.log.Info("Starting Reader Kafka consumers")
+	cg := kafkaClient.NewConsumerGroup(s.cfg.Kafka.Brokers, s.cfg.Kafka.GroupID, s.log)
+	go cg.ConsumeTopic(ctx, s.getConsumerGroupTopics(), readerKafka.PoolSize, readerMessageProcessor.ProcessMessages)
+
+	if err := s.connectKafkaBrokers(ctx); err != nil {
+		return errors.Wrap(err, "s.connectKafkaBrokers")
+	}
 
 	return nil
 }

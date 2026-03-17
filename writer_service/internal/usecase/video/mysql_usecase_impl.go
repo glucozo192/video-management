@@ -15,6 +15,7 @@ import (
 	kafkaClient "github.com/glu/video-real-time-ranking/core/pkg/kafka"
 	"github.com/glu/video-real-time-ranking/core/pkg/logger"
 	"github.com/glu/video-real-time-ranking/core/pkg/utils"
+	kafkaMessages "github.com/glu/video-real-time-ranking/core/proto/kafka"
 	readerService "github.com/glu/video-real-time-ranking/core/proto/services/reader/proto_buf"
 	"github.com/glu/video-real-time-ranking/ent"
 	"github.com/glu/video-real-time-ranking/writer_service/config"
@@ -26,6 +27,8 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/segmentio/kafka-go"
+	"google.golang.org/protobuf/proto"
 )
 
 type videoUsecase struct {
@@ -201,6 +204,24 @@ func (p *videoUsecase) Delete(ctx context.Context, id uint) error {
 	if err != nil {
 		return errors.Wrap(err, "videoRepository.DeleteVideo")
 	}
+
+	// Publish VideoDeleted event (non-blocking)
+	if p.kafkaProducer != nil {
+		go func() {
+			msg, err := proto.Marshal(&kafkaMessages.VideoDelete{VideoID: uint32(id)})
+			if err != nil {
+				p.log.WarnMsg("proto.Marshal VideoDelete", err)
+				return
+			}
+			if err := p.kafkaProducer.PublishMessage(context.Background(), kafka.Message{
+				Topic: p.cfg.KafkaTopics.VideoDeleted.TopicName,
+				Value: msg,
+			}); err != nil {
+				p.log.WarnMsg("kafkaProducer.PublishMessage VideoDeleted", err)
+			}
+		}()
+	}
+
 	return nil
 }
 
@@ -219,6 +240,35 @@ func (p *videoUsecase) Update(ctx context.Context, video *ent.Videos) (*ent.Vide
 		return nil, errors.Wrap(err, "videoRepository.UpdateVideo")
 	}
 
+	// Publish VideoUpdated event (non-blocking)
+	if p.kafkaProducer != nil {
+		go func() {
+			msg, err := proto.Marshal(&kafkaMessages.VideoUpdate{
+				VideoID:      uint32(videoDB.ID),
+				Name:         videoDB.Name,
+				Description:  videoDB.Description,
+				VideoUrl:     videoDB.VideoURL,
+				Config:       videoDB.Config,
+				PathResource: videoDB.PathResource,
+				LevelSystem:  videoDB.LevelSystem,
+				Status:       videoDB.Status,
+				Note:         videoDB.Note,
+				Assign:       videoDB.Assign,
+				Author:       videoDB.Author,
+			})
+			if err != nil {
+				p.log.WarnMsg("proto.Marshal VideoUpdate", err)
+				return
+			}
+			if err := p.kafkaProducer.PublishMessage(context.Background(), kafka.Message{
+				Topic: p.cfg.KafkaTopics.VideoUpdated.TopicName,
+				Value: msg,
+			}); err != nil {
+				p.log.WarnMsg("kafkaProducer.PublishMessage VideoUpdated", err)
+			}
+		}()
+	}
+
 	return videoDB, nil
 }
 
@@ -226,6 +276,35 @@ func (p *videoUsecase) Create(ctx context.Context, video *ent.Videos) (*ent.Vide
 	videoDB, err := p.videoRepository.CreateVideo(ctx, video)
 	if err != nil {
 		return nil, errors.Wrap(err, "videoRepository.createdVideo")
+	}
+
+	// Publish VideoCreated event (non-blocking)
+	if p.kafkaProducer != nil {
+		go func() {
+			msg, err := proto.Marshal(&kafkaMessages.VideoCreate{
+				VideoID:      uint32(videoDB.ID),
+				Name:         videoDB.Name,
+				Description:  videoDB.Description,
+				VideoUrl:     videoDB.VideoURL,
+				Config:       videoDB.Config,
+				PathResource: videoDB.PathResource,
+				LevelSystem:  videoDB.LevelSystem,
+				Status:       videoDB.Status,
+				Note:         videoDB.Note,
+				Assign:       videoDB.Assign,
+				Author:       videoDB.Author,
+			})
+			if err != nil {
+				p.log.WarnMsg("proto.Marshal VideoCreate", err)
+				return
+			}
+			if err := p.kafkaProducer.PublishMessage(context.Background(), kafka.Message{
+				Topic: p.cfg.KafkaTopics.VideoCreated.TopicName,
+				Value: msg,
+			}); err != nil {
+				p.log.WarnMsg("kafkaProducer.PublishMessage VideoCreated", err)
+			}
+		}()
 	}
 
 	return videoDB, nil
